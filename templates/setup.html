@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup — SEC EDGAR Filing Downloader</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SEC EDGAR Filing Downloader</h1>
+        </header>
+
+        <div class="setup-card">
+            <h2>First-Time Setup</h2>
+            <p>The SEC requires a <strong>User-Agent</strong> header to identify who is making requests to their API. Please provide your name and email below. This is stored locally in a <code>.env</code> file and never shared.</p>
+
+            <label for="ua-input">Your Name and Email</label>
+            <div class="input-group">
+                <input type="text" id="ua-input" placeholder="e.g. Jane Doe jane@example.com" autocomplete="off">
+                <button id="save-btn" onclick="saveSetup()">Save & Continue</button>
+            </div>
+            <div id="setup-error" class="error hidden"></div>
+        </div>
+    </div>
+
+    <script>
+        async function saveSetup() {
+            const input = document.getElementById("ua-input");
+            const value = input.value.trim();
+            if (!value) return;
+
+            document.getElementById("save-btn").disabled = true;
+            document.getElementById("setup-error").classList.add("hidden");
+
+            try {
+                const resp = await fetch("/api/setup", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ userAgent: value }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    document.getElementById("setup-error").textContent = data.error;
+                    document.getElementById("setup-error").classList.remove("hidden");
+                    return;
+                }
+                window.location.href = "/";
+            } catch (err) {
+                document.getElementById("setup-error").textContent = "Failed to save. Is the server running?";
+                document.getElementById("setup-error").classList.remove("hidden");
+            } finally {
+                document.getElementById("save-btn").disabled = false;
+            }
+        }
+
+        document.getElementById("ua-input").addEventListener("keydown", (e) => {
+            if (e.key === "Enter") saveSetup();
+        });
+    </script>
+</body>
+</html>

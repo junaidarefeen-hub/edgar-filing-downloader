@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEC EDGAR Filing Downloader</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SEC EDGAR Filing Downloader</h1>
+        </header>
+
+        <!-- Ticker Input -->
+        <div class="search-section">
+            <label for="ticker-input">Enter Ticker Symbol</label>
+            <div class="input-group">
+                <input type="text" id="ticker-input" placeholder="e.g. AAPL" autocomplete="off">
+                <button id="lookup-btn" onclick="lookupTicker()">Look Up</button>
+            </div>
+            <div id="error-msg" class="error hidden"></div>
+        </div>
+
+        <!-- Company Info (hidden until lookup) -->
+        <div id="company-section" class="hidden">
+            <div class="company-info">
+                <h2 id="company-name"></h2>
+                <span id="company-cik" class="cik-badge"></span>
+            </div>
+
+            <!-- Filing Type Filters -->
+            <div class="filter-section">
+                <div class="filter-header">
+                    <h3>Filing Types</h3>
+                    <div class="filter-actions">
+                        <button class="btn-small" onclick="selectAllTypes()">Select All</button>
+                        <button class="btn-small" onclick="deselectAllTypes()">Deselect All</button>
+                    </div>
+                </div>
+                <div id="filing-types" class="checkbox-grid"></div>
+            </div>
+
+            <!-- Date Range -->
+            <div class="filter-section">
+                <h3>Date Range</h3>
+                <div class="date-range">
+                    <select id="start-year" onchange="filterAndRenderTable()"></select>
+                    <span>to</span>
+                    <select id="end-year" onchange="filterAndRenderTable()"></select>
+                </div>
+            </div>
+
+            <!-- Filing Count -->
+            <div class="filing-count">
+                Matching filings: <strong id="filing-count-num">0</strong>
+            </div>
+
+            <!-- Filings Table -->
+            <div class="table-wrapper">
+                <table id="filings-table">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Date</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody id="filings-tbody"></tbody>
+                </table>
+            </div>
+
+            <!-- Download Button -->
+            <button id="download-btn" class="btn-download" onclick="startDownload()">
+                Download Selected (<span id="download-count">0</span>)
+            </button>
+
+            <!-- Progress Section (hidden until download starts) -->
+            <div id="progress-section" class="hidden">
+                <h3>Download Progress</h3>
+                <div class="progress-bar-outer">
+                    <div id="progress-bar" class="progress-bar-inner" style="width: 0%"></div>
+                </div>
+                <div class="progress-details">
+                    <span id="progress-text">0 / 0</span>
+                    <span id="progress-current"></span>
+                </div>
+                <div id="progress-errors" class="hidden">
+                    <h4>Errors (<span id="error-count">0</span>)</h4>
+                    <ul id="error-list"></ul>
+                </div>
+                <div id="progress-done" class="hidden success-msg">
+                    Download complete!
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Spinner -->
+        <div id="spinner" class="spinner hidden"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
