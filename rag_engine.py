@@ -15,28 +15,123 @@ import config
 # Text processing
 # ---------------------------------------------------------------------------
 
+_BLOCK_TAGS = re.compile(
+    r"(<\s*/?\s*(?:p|div|br|tr|h[1-6]|li|ul|ol|table|thead|tbody|section|article|blockquote)\b)",
+    re.IGNORECASE,
+)
+
+
 def strip_html(text: str) -> str:
-    """Remove HTML tags and collapse whitespace."""
+    """Remove HTML tags, preserving paragraph boundaries as double newlines."""
+    # Insert paragraph breaks before block-level tags so boundaries survive
+    text = _BLOCK_TAGS.sub(r"\n\n\1", text)
     soup = BeautifulSoup(text, "html.parser")
     clean = soup.get_text(separator=" ")
-    clean = re.sub(r"\s+", " ", clean).strip()
-    return clean
+    # Collapse runs of whitespace within lines, but preserve double-newline breaks
+    clean = re.sub(r"[ \t]+", " ", clean)
+    clean = re.sub(r"\n[ \t]*\n[\n ]*", "\n\n", clean)
+    return clean.strip()
+
+
+def _get_overlap_paragraphs(paragraphs: list[str], overlap: int) -> list[str]:
+    """Return trailing paragraphs from the list that fit within the overlap word budget."""
+    result = []
+    total = 0
+    for para in reversed(paragraphs):
+        words = len(para.split())
+        if total + words > overlap and result:
+            break
+        result.append(para)
+        total += words
+    result.reverse()
+    return result
+
+
+def _get_overlap_sentences(sentences: list[str], overlap: int) -> list[str]:
+    """Return trailing sentences that fit within the overlap word budget."""
+    result = []
+    total = 0
+    for sent in reversed(sentences):
+        words = len(sent.split())
+        if total + words > overlap and result:
+            break
+        result.append(sent)
+        total += words
+    result.reverse()
+    return result
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
-    """Split text into overlapping chunks by approximate token count (words)."""
-    words = text.split()
-    if not words:
+    """Split text into overlapping chunks using paragraph-aware splitting.
+
+    Splits on double-newline paragraph boundaries first.  For oversized
+    paragraphs, falls back to sentence-boundary splitting.
+    """
+    if not text or not text.strip():
         return []
-    chunks = []
-    start = 0
-    while start < len(words):
-        end = start + chunk_size
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
-        if end >= len(words):
-            break
-        start = end - overlap
+
+    paragraphs = [p.strip() for p in re.split(r"\n\n+", text) if p.strip()]
+    if not paragraphs:
+        return []
+
+    chunks: list[str] = []
+    current_paras: list[str] = []
+    current_words = 0
+
+    def flush():
+        nonlocal current_paras, current_words
+        if current_paras:
+            chunks.append("\n\n".join(current_paras))
+            # Overlap: keep trailing paragraphs within budget
+            overlap_paras = _get_overlap_paragraphs(current_paras, overlap)
+            current_paras = list(overlap_paras)
+            current_words = sum(len(p.split()) for p in current_paras)
+
+    for para in paragraphs:
+        para_words = len(para.split())
+
+        if para_words > chunk_size:
+            # Flush anything accumulated so far
+            flush()
+
+            # Split oversized paragraph by sentences
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", para) if s.strip()]
+            if not sentences:
+                sentences = [para]
+
+            sent_buf: list[str] = list(current_paras)  # include overlap
+            sent_words = current_words
+
+            for sent in sentences:
+                sw = len(sent.split())
+                if sent_words + sw > chunk_size and sent_buf:
+                    chunks.append(" ".join(sent_buf))
+                    overlap_sents = _get_overlap_sentences(sent_buf, overlap)
+                    sent_buf = list(overlap_sents)
+                    sent_words = sum(len(s.split()) for s in sent_buf)
+                sent_buf.append(sent)
+                sent_words += sw
+
+            if sent_buf:
+                chunks.append(" ".join(sent_buf))
+                overlap_sents = _get_overlap_sentences(sent_buf, overlap)
+                current_paras = list(overlap_sents)
+                current_words = sum(len(s.split()) for s in current_paras)
+            else:
+                current_paras = []
+                current_words = 0
+            continue
+
+        if current_words + para_words > chunk_size and current_paras:
+            flush()
+
+        current_paras.append(para)
+        current_words += para_words
+
+    # Final flush without overlap
+    if current_paras:
+        chunks.append("\n\n".join(current_paras))
+
     return chunks
 
 
@@ -173,6 +268,52 @@ def index_filings(file_paths: list[str], ticker: str, progress_callback=None) ->
 
 
 # ---------------------------------------------------------------------------
+# Query helpers
+# ---------------------------------------------------------------------------
+
+def _build_where_filter(filing_types=None):
+    """Build a ChromaDB ``where`` clause for filing type filtering.
+
+    Date filtering is handled post-retrieval because ChromaDB's ``$gte``/``$lte``
+    operators only work on numeric types, and ``filing_date`` is stored as a string.
+
+    Args:
+        filing_types: List of filing type strings to include (e.g. ["10-K", "10-Q"]).
+
+    Returns:
+        A dict suitable for ``collection.query(where=...)`` or ``None`` if no filter.
+    """
+    if filing_types:
+        return {"filing_type": {"$in": filing_types}}
+    return None
+
+
+def _filter_by_date(documents, metadatas, distances, date_from=None, date_to=None):
+    """Filter retrieved chunks by filing_date range (string comparison on ISO dates).
+
+    Returns filtered (documents, metadatas, distances) tuples.
+    """
+    if not date_from and not date_to:
+        return documents, metadatas, distances
+
+    filtered_docs = []
+    filtered_metas = []
+    filtered_dists = []
+
+    for doc, meta, dist in zip(documents, metadatas, distances):
+        fd = meta.get("filing_date", "")
+        if date_from and fd < date_from:
+            continue
+        if date_to and fd > date_to:
+            continue
+        filtered_docs.append(doc)
+        filtered_metas.append(meta)
+        filtered_dists.append(dist)
+
+    return filtered_docs, filtered_metas, filtered_dists
+
+
+# ---------------------------------------------------------------------------
 # Querying
 # ---------------------------------------------------------------------------
 
@@ -187,7 +328,8 @@ def get_indexed_files(ticker: str) -> set[str]:
         return set()
 
 
-def query(question: str, ticker: str, top_k: int = 10, model: str = None):
+def query(question: str, ticker: str, top_k: int = 15, model: str = None,
+          date_from: str = None, date_to: str = None, filing_types: list[str] = None):
     """Query indexed filings and return a streamed Gemini response.
 
     Args:
@@ -195,9 +337,13 @@ def query(question: str, ticker: str, top_k: int = 10, model: str = None):
         ticker: Ticker symbol (ChromaDB collection name).
         top_k: Number of relevant chunks to retrieve.
         model: Gemini model name to use. Defaults to config.GEMINI_MODEL.
+        date_from: Optional lower-bound date filter (inclusive).
+        date_to: Optional upper-bound date filter (inclusive).
+        filing_types: Optional list of filing types to include.
 
     Yields:
-        str chunks of the Gemini response.
+        First item may be a dict ``{"_sources": [...]}`` with source metadata.
+        Subsequent items are str chunks of the Gemini response.
     """
     model = model or config.GEMINI_MODEL
     genai.configure(api_key=config.GEMINI_API_KEY)
@@ -217,19 +363,62 @@ def query(question: str, ticker: str, top_k: int = 10, model: str = None):
     )
     query_embedding = q_result["embedding"]
 
-    # Retrieve relevant chunks
-    results = collection.query(
+    # Build optional where filter (filing types only; dates filtered post-retrieval)
+    where_filter = _build_where_filter(filing_types)
+
+    # Retrieve relevant chunks (include distances for relevance threshold)
+    query_kwargs = dict(
         query_embeddings=[query_embedding],
         n_results=top_k,
-        include=["documents", "metadatas"],
+        include=["documents", "metadatas", "distances"],
     )
+    if where_filter:
+        query_kwargs["where"] = where_filter
+
+    results = collection.query(**query_kwargs)
 
     documents = results["documents"][0] if results["documents"] else []
     metadatas = results["metadatas"][0] if results["metadatas"] else []
+    distances = results["distances"][0] if results.get("distances") else []
+
+    # Post-retrieval date filtering (ISO date strings compare lexicographically)
+    if date_from or date_to:
+        documents, metadatas, distances = _filter_by_date(
+            documents, metadatas, distances, date_from, date_to,
+        )
 
     if not documents:
         yield "No relevant content found in the indexed filings."
         return
+
+    # Relevance threshold: drop chunks with cosine distance > 0.35
+    # (cosine distance in ChromaDB = 1 - similarity, so 0.35 ≈ 0.65 similarity)
+    # Always keep at least the single best chunk.
+    DISTANCE_THRESHOLD = 0.35
+
+    if distances:
+        filtered = [
+            (doc, meta, dist)
+            for doc, meta, dist in zip(documents, metadatas, distances)
+            if dist <= DISTANCE_THRESHOLD
+        ]
+        # Always keep at least the best chunk
+        if not filtered:
+            best_idx = distances.index(min(distances))
+            filtered = [(documents[best_idx], metadatas[best_idx], distances[best_idx])]
+        documents = [f[0] for f in filtered]
+        metadatas = [f[1] for f in filtered]
+
+    # Emit source metadata as first item
+    seen = set()
+    sources = []
+    for meta in metadatas:
+        key = (meta.get("filing_type", ""), meta.get("filing_date", ""))
+        if key not in seen and key != ("", ""):
+            seen.add(key)
+            sources.append({"filing_type": key[0], "filing_date": key[1]})
+    if sources:
+        yield {"_sources": sources}
 
     # Build context with source info
     context_parts = []
@@ -250,9 +439,26 @@ USER QUESTION: {question}
 
 ANSWER:"""
 
-    # Stream response from Gemini
-    gen_model = genai.GenerativeModel(model)
+    # Stream response from Gemini (with thinking support for Gemini 2.5+)
+    try:
+        gen_model = genai.GenerativeModel(
+            model,
+            generation_config={"thinking_config": {"includeThoughts": True}},
+        )
+    except Exception:
+        gen_model = genai.GenerativeModel(model)
+
     response = gen_model.generate_content(prompt, stream=True)
     for chunk in response:
-        if chunk.text:
-            yield chunk.text
+        try:
+            parts = chunk.candidates[0].content.parts
+            for part in parts:
+                if hasattr(part, "thought") and part.thought:
+                    if part.text:
+                        yield {"_thinking": part.text}
+                elif part.text:
+                    yield part.text
+        except (AttributeError, IndexError):
+            # Fallback for models that don't support thinking / parts access
+            if chunk.text:
+                yield chunk.text

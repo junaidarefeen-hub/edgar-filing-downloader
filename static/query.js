@@ -183,6 +183,60 @@ function updateSelection() {
 function onTickerChange() {
     selectedTicker = $("ticker-select").value;
     $("send-btn").disabled = !selectedTicker;
+    populateFilingTypeFilters();
+}
+
+// ---------------------------------------------------------------------------
+// Query filters
+// ---------------------------------------------------------------------------
+
+function populateFilingTypeFilters() {
+    const container = $("filing-type-checkboxes");
+    const filtersSection = $("query-filters");
+    container.innerHTML = "";
+
+    if (!selectedTicker || !filingsData[selectedTicker]) {
+        filtersSection.classList.add("hidden");
+        return;
+    }
+
+    filtersSection.classList.remove("hidden");
+
+    const formTypes = Object.keys(filingsData[selectedTicker]).sort();
+    for (const ft of formTypes) {
+        const label = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = true;
+        cb.value = ft;
+        cb.className = "filter-type-cb";
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(" " + ft.replace("_", "/")));
+        container.appendChild(label);
+    }
+}
+
+function clearFilters() {
+    $("filter-date-from").value = "";
+    $("filter-date-to").value = "";
+    document.querySelectorAll(".filter-type-cb").forEach(cb => { cb.checked = true; });
+}
+
+function getFilterParams() {
+    const params = {};
+    const dateFrom = $("filter-date-from").value;
+    const dateTo = $("filter-date-to").value;
+    if (dateFrom) params.dateFrom = dateFrom;
+    if (dateTo) params.dateTo = dateTo;
+
+    // Only send filingTypes when not all are checked (all-checked = no filter)
+    const allCbs = document.querySelectorAll(".filter-type-cb");
+    const checkedCbs = document.querySelectorAll(".filter-type-cb:checked");
+    if (allCbs.length > 0 && checkedCbs.length < allCbs.length) {
+        params.filingTypes = [...checkedCbs].map(cb => cb.value);
+    }
+
+    return params;
 }
 
 function selectAllFilings() {
@@ -279,7 +333,6 @@ async function indexSelected() {
 
 function addChatMessage(role, text) {
     const messages = $("chat-messages");
-    // Remove empty state
     const empty = messages.querySelector(".empty-state");
     if (empty) empty.remove();
 
@@ -294,12 +347,37 @@ function addChatMessage(role, text) {
     }
 
     const content = document.createElement("span");
+    content.className = "chat-msg-content";
     content.textContent = text;
     div.appendChild(content);
 
     messages.appendChild(div);
     messages.scrollTop = messages.scrollHeight;
-    return content; // Return the content span for streaming updates
+    return content;
+}
+
+function addChatMessageDiv(role) {
+    const messages = $("chat-messages");
+    const empty = messages.querySelector(".empty-state");
+    if (empty) empty.remove();
+
+    const div = document.createElement("div");
+    div.className = "chat-msg " + (role === "user" ? "chat-msg-user" : "chat-msg-assistant");
+
+    if (role === "assistant") {
+        const label = document.createElement("span");
+        label.className = "chat-msg-label";
+        label.textContent = "Gemini";
+        div.appendChild(label);
+    }
+
+    const content = document.createElement("span");
+    content.className = "chat-msg-content";
+    div.appendChild(content);
+
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    return div;
 }
 
 async function sendQuery() {
@@ -314,20 +392,26 @@ async function sendQuery() {
     input.value = "";
 
     addChatMessage("user", question);
-    const contentSpan = addChatMessage("assistant", "");
+
+    // Create a wrapper div for sources + assistant text
+    const msgDiv = addChatMessageDiv("assistant");
+    const contentSpan = msgDiv.querySelector(".chat-msg-content");
 
     try {
         const model = $("model-select").value;
+        const filters = getFilterParams();
         const resp = await fetch("/api/query", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ticker, question, model }),
+            body: JSON.stringify({ ticker, question, model, ...filters }),
         });
 
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
         let fullText = "";
+        let thinkingDetails = null;
+        let thinkingBody = null;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -341,7 +425,30 @@ async function sendQuery() {
                 if (!line.startsWith("data: ")) continue;
                 const data = JSON.parse(line.slice(6));
 
-                if (data.status === "streaming") {
+                if (data.status === "sources") {
+                    const sourcesLine = data.sources
+                        .map(s => `${s.filing_type.replace("_", "/")} ${s.filing_date}`)
+                        .join(", ");
+                    const tag = document.createElement("div");
+                    tag.className = "chat-sources";
+                    tag.textContent = "Sources: " + sourcesLine;
+                    // Insert before the content span
+                    msgDiv.insertBefore(tag, contentSpan);
+                } else if (data.status === "thinking") {
+                    if (!thinkingDetails) {
+                        thinkingDetails = document.createElement("details");
+                        thinkingDetails.className = "chat-thinking";
+                        const summary = document.createElement("summary");
+                        summary.textContent = "Thinking...";
+                        thinkingDetails.appendChild(summary);
+                        thinkingBody = document.createElement("div");
+                        thinkingBody.className = "chat-thinking-body";
+                        thinkingDetails.appendChild(thinkingBody);
+                        msgDiv.insertBefore(thinkingDetails, contentSpan);
+                    }
+                    thinkingBody.textContent += data.text;
+                    $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
+                } else if (data.status === "streaming") {
                     fullText += data.text;
                     contentSpan.textContent = fullText;
                     $("chat-messages").scrollTop = $("chat-messages").scrollHeight;

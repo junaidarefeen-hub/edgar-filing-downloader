@@ -698,6 +698,139 @@ tbody tr:hover {
 }
 
 /* -----------------------------------------------------------------------
+   Query filters
+   ----------------------------------------------------------------------- */
+
+.query-filters {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.query-filters-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.query-filters-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.query-filters-row {
+    display: flex;
+    gap: 2rem;
+    align-items: flex-start;
+}
+
+.filter-group {
+    flex: 1;
+    min-width: 0;
+}
+
+.filter-group > label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 0.4rem;
+}
+
+.filter-date-inputs {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.filter-date-inputs input[type="date"] {
+    padding: 0.35rem 0.5rem;
+    font-size: 0.85rem;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.filter-date-inputs input[type="date"]:focus {
+    border-color: #2563eb;
+}
+
+.filter-date-inputs span {
+    font-size: 0.85rem;
+    color: #6b7280;
+}
+
+.filing-type-checkboxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.9rem;
+}
+
+.filing-type-checkboxes label {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.filing-type-checkboxes input[type="checkbox"] {
+    cursor: pointer;
+}
+
+/* -----------------------------------------------------------------------
+   Chat sources tag
+   ----------------------------------------------------------------------- */
+
+.chat-sources {
+    font-size: 0.75rem;
+    color: #6b7280;
+    background: #f3f4f6;
+    border-radius: 6px;
+    padding: 0.25rem 0.5rem;
+    margin-bottom: 0.4rem;
+    display: inline-block;
+}
+
+/* -----------------------------------------------------------------------
+   Chat thinking (collapsible reasoning)
+   ----------------------------------------------------------------------- */
+
+.chat-thinking {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-left: 3px solid #a5b4fc;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.82rem;
+    color: #4b5563;
+}
+
+.chat-thinking summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #6366f1;
+    user-select: none;
+}
+
+.chat-thinking-body {
+    margin-top: 0.4rem;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.5;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* -----------------------------------------------------------------------
    Chat section
    ----------------------------------------------------------------------- */
 
@@ -869,5 +1002,14 @@ tbody tr:hover {
 
     .checkbox-grid label {
         min-width: 50%;
+    }
+
+    .query-filters-row {
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+
+    .filter-date-inputs {
+        flex-wrap: wrap;
     }
 }

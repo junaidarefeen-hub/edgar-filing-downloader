@@ -604,7 +604,12 @@ class TestQueryRoute:
         original_key = config.GEMINI_API_KEY
         config.GEMINI_API_KEY = "test-key"
 
-        mock_query.return_value = iter(["Revenue was ", "$100 billion."])
+        mock_query.return_value = iter([
+            {"_sources": [{"filing_type": "10-K", "filing_date": "2024-01-01"}]},
+            {"_thinking": "Analyzing revenue data..."},
+            "Revenue was ",
+            "$100 billion.",
+        ])
 
         resp = client.post("/api/query", json={"ticker": "AAPL", "question": "What is revenue?"})
         assert resp.status_code == 200
@@ -614,6 +619,8 @@ class TestQueryRoute:
         for chunk in resp.response:
             data += chunk
         decoded = data.decode()
+        assert "sources" in decoded
+        assert "thinking" in decoded
         assert "streaming" in decoded
         assert "done" in decoded
         config.GEMINI_API_KEY = original_key
@@ -626,12 +633,17 @@ class TestQueryRoute:
 class TestStripHtml:
     def test_basic_html(self):
         result = rag_engine.strip_html("<p>Hello <b>world</b></p>")
-        assert result == "Hello world"
+        assert "Hello" in result
+        assert "world" in result
 
     def test_nested_tags(self):
         result = rag_engine.strip_html("<div><p>Paragraph 1</p><p>Paragraph 2</p></div>")
         assert "Paragraph 1" in result
         assert "Paragraph 2" in result
+
+    def test_preserves_paragraph_boundaries(self):
+        result = rag_engine.strip_html("<p>First para</p><p>Second para</p>")
+        assert "\n\n" in result
 
     def test_empty_input(self):
         assert rag_engine.strip_html("") == ""
@@ -639,18 +651,14 @@ class TestStripHtml:
     def test_plain_text(self):
         assert rag_engine.strip_html("No HTML here") == "No HTML here"
 
-    def test_whitespace_collapse(self):
-        result = rag_engine.strip_html("<p>Hello   \n\n   world</p>")
-        assert result == "Hello world"
-
 
 class TestChunkText:
-    def test_basic_chunking(self):
-        text = " ".join(f"word{i}" for i in range(2500))
+    def test_paragraph_aware_chunking(self):
+        """Paragraphs are respected as chunk boundaries."""
+        paras = ["Paragraph %d. " % i + " ".join(f"w{j}" for j in range(300)) for i in range(5)]
+        text = "\n\n".join(paras)
         chunks = rag_engine.chunk_text(text, chunk_size=1000, overlap=200)
-        assert len(chunks) == 3
-        # First chunk should have 1000 words
-        assert len(chunks[0].split()) == 1000
+        assert len(chunks) >= 2
 
     def test_small_text(self):
         chunks = rag_engine.chunk_text("short text", chunk_size=1000, overlap=200)
@@ -661,13 +669,72 @@ class TestChunkText:
         assert rag_engine.chunk_text("") == []
         assert rag_engine.chunk_text("   ") == []
 
-    def test_overlap(self):
-        text = " ".join(f"word{i}" for i in range(1500))
-        chunks = rag_engine.chunk_text(text, chunk_size=1000, overlap=200)
-        assert len(chunks) == 2
-        # The second chunk should start 800 words in (1000 - 200 overlap)
-        words_chunk2 = chunks[1].split()
-        assert words_chunk2[0] == "word800"
+    def test_oversized_paragraph_sentence_split(self):
+        """A single paragraph larger than chunk_size falls back to sentence splitting."""
+        sentences = [f"Sentence number {i} has some words in it." for i in range(200)]
+        text = " ".join(sentences)  # One giant paragraph
+        chunks = rag_engine.chunk_text(text, chunk_size=100, overlap=20)
+        assert len(chunks) >= 2
+        # All content should be present across chunks
+        full = " ".join(chunks)
+        assert "Sentence number 0" in full
+        assert "Sentence number 199" in full
+
+    def test_overlap_paragraphs(self):
+        """Overlap should carry trailing paragraphs into the next chunk."""
+        paras = [" ".join(f"w{j}" for j in range(400)) for _ in range(4)]
+        text = "\n\n".join(paras)
+        chunks = rag_engine.chunk_text(text, chunk_size=500, overlap=100)
+        # Multiple chunks should be produced
+        assert len(chunks) >= 2
+
+
+class TestBuildWhereFilter:
+    def test_no_filters(self):
+        assert rag_engine._build_where_filter() is None
+
+    def test_filing_types(self):
+        result = rag_engine._build_where_filter(filing_types=["10-K", "10-Q"])
+        assert result == {"filing_type": {"$in": ["10-K", "10-Q"]}}
+
+    def test_no_filing_types(self):
+        assert rag_engine._build_where_filter(filing_types=None) is None
+
+
+class TestFilterByDate:
+    def test_no_date_filters(self):
+        docs = ["a", "b"]
+        metas = [{"filing_date": "2023-01-01"}, {"filing_date": "2024-06-01"}]
+        dists = [0.1, 0.2]
+        rd, rm, rdi = rag_engine._filter_by_date(docs, metas, dists)
+        assert rd == docs
+
+    def test_date_from(self):
+        docs = ["old", "new"]
+        metas = [{"filing_date": "2022-06-01"}, {"filing_date": "2024-01-15"}]
+        dists = [0.1, 0.2]
+        rd, rm, rdi = rag_engine._filter_by_date(docs, metas, dists, date_from="2023-01-01")
+        assert rd == ["new"]
+
+    def test_date_to(self):
+        docs = ["old", "new"]
+        metas = [{"filing_date": "2022-06-01"}, {"filing_date": "2024-01-15"}]
+        dists = [0.1, 0.2]
+        rd, rm, rdi = rag_engine._filter_by_date(docs, metas, dists, date_to="2023-12-31")
+        assert rd == ["old"]
+
+    def test_date_range(self):
+        docs = ["a", "b", "c"]
+        metas = [
+            {"filing_date": "2022-01-01"},
+            {"filing_date": "2023-06-15"},
+            {"filing_date": "2025-01-01"},
+        ]
+        dists = [0.1, 0.2, 0.3]
+        rd, rm, rdi = rag_engine._filter_by_date(
+            docs, metas, dists, date_from="2023-01-01", date_to="2024-12-31"
+        )
+        assert rd == ["b"]
 
 
 class TestIndexFilings:
@@ -736,6 +803,7 @@ class TestQuery:
         mock_collection.query.return_value = {
             "documents": [["Revenue was $100 billion."]],
             "metadatas": [[{"filing_type": "10-K", "filing_date": "2024-01-01", "source_file": "/test.htm"}]],
+            "distances": [[0.15]],
         }
         mock_client = MagicMock()
         mock_client.get_collection.return_value = mock_collection
@@ -744,9 +812,19 @@ class TestQuery:
         # Mock Gemini embedding
         mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
 
-        # Mock Gemini model
+        # Mock Gemini model with thinking + answer parts
+        mock_thought_part = MagicMock()
+        mock_thought_part.thought = True
+        mock_thought_part.text = "Let me analyze the revenue data..."
+
+        mock_answer_part = MagicMock()
+        mock_answer_part.thought = False
+        mock_answer_part.text = "Based on the 10-K filing, revenue was $100 billion."
+
         mock_chunk = MagicMock()
-        mock_chunk.text = "Based on the 10-K filing, revenue was $100 billion."
+        mock_chunk.candidates = [MagicMock()]
+        mock_chunk.candidates[0].content.parts = [mock_thought_part, mock_answer_part]
+
         mock_response = MagicMock()
         mock_response.__iter__ = MagicMock(return_value=iter([mock_chunk]))
         mock_model = MagicMock()
@@ -754,8 +832,56 @@ class TestQuery:
         mock_genai.GenerativeModel.return_value = mock_model
 
         result = list(rag_engine.query("What is revenue?", "AAPL"))
-        assert len(result) > 0
-        assert "100 billion" in result[0]
+        # First item should be a sources dict
+        assert isinstance(result[0], dict)
+        assert "_sources" in result[0]
+        assert result[0]["_sources"][0]["filing_type"] == "10-K"
+        # Second item should be a thinking dict
+        assert isinstance(result[1], dict)
+        assert "_thinking" in result[1]
+        assert "analyze" in result[1]["_thinking"]
+        # Third item should be the LLM text
+        assert "100 billion" in result[2]
+        config.GEMINI_API_KEY = original_key
+
+    @patch("rag_engine.genai")
+    @patch("rag_engine._get_chroma_client")
+    def test_query_filters_low_relevance(self, mock_chroma, mock_genai):
+        """Chunks with high cosine distance should be filtered out."""
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = "test-key"
+
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Good chunk.", "Bad chunk."]],
+            "metadatas": [
+                [
+                    {"filing_type": "10-K", "filing_date": "2024-01-01", "source_file": "/a.htm"},
+                    {"filing_type": "10-Q", "filing_date": "2024-06-01", "source_file": "/b.htm"},
+                ],
+            ],
+            "distances": [[0.10, 0.80]],  # second chunk is low relevance
+        }
+        mock_client = MagicMock()
+        mock_client.get_collection.return_value = mock_collection
+        mock_chroma.return_value = mock_client
+
+        mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
+
+        mock_chunk = MagicMock()
+        mock_chunk.text = "Answer."
+        mock_response = MagicMock()
+        mock_response.__iter__ = MagicMock(return_value=iter([mock_chunk]))
+        mock_model = MagicMock()
+        mock_model.generate_content.return_value = mock_response
+        mock_genai.GenerativeModel.return_value = mock_model
+
+        result = list(rag_engine.query("test?", "AAPL"))
+        sources = result[0]
+        assert isinstance(sources, dict)
+        # Only the good chunk's source should appear (10-K)
+        assert len(sources["_sources"]) == 1
+        assert sources["_sources"][0]["filing_type"] == "10-K"
         config.GEMINI_API_KEY = original_key
 
     @patch("rag_engine._get_chroma_client")

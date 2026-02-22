@@ -288,6 +288,9 @@ def api_query():
     ticker = data.get("ticker", "").strip().upper()
     question = data.get("question", "").strip()
     model = data.get("model", "").strip() or config.GEMINI_MODEL
+    date_from = data.get("dateFrom", "").strip() or None
+    date_to = data.get("dateTo", "").strip() or None
+    filing_types = data.get("filingTypes") or None  # list or None
 
     if not ticker or not question:
         return jsonify({"error": "ticker and question are required."}), 400
@@ -297,8 +300,16 @@ def api_query():
 
     def generate():
         try:
-            for chunk in rag_engine.query(question, ticker, model=model):
-                yield f"data: {json.dumps({'status': 'streaming', 'text': chunk})}\n\n"
+            for chunk in rag_engine.query(
+                question, ticker, model=model,
+                date_from=date_from, date_to=date_to, filing_types=filing_types,
+            ):
+                if isinstance(chunk, dict) and "_sources" in chunk:
+                    yield f"data: {json.dumps({'status': 'sources', 'sources': chunk['_sources']})}\n\n"
+                elif isinstance(chunk, dict) and "_thinking" in chunk:
+                    yield f"data: {json.dumps({'status': 'thinking', 'text': chunk['_thinking']})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'status': 'streaming', 'text': chunk})}\n\n"
             yield f"data: {json.dumps({'status': 'done'})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'status': 'error', 'error': str(e)})}\n\n"
