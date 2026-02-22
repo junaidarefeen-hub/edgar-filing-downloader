@@ -52,6 +52,28 @@
                 <div class="progress-msg" id="index-progress-msg">Indexing...</div>
             </div>
 
+            <!-- Query Filters -->
+            <div id="query-filters" class="query-filters hidden">
+                <div class="query-filters-header">
+                    <h3>Query Filters</h3>
+                    <button class="btn-small" onclick="clearFilters()">Clear Filters</button>
+                </div>
+                <div class="query-filters-row">
+                    <div class="filter-group">
+                        <label>Date Range</label>
+                        <div class="filter-date-inputs">
+                            <input type="date" id="filter-date-from" placeholder="From">
+                            <span>to</span>
+                            <input type="date" id="filter-date-to" placeholder="To">
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <label>Filing Types</label>
+                        <div id="filing-type-checkboxes" class="filing-type-checkboxes"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Model Selector -->
             <div class="model-selector">
                 <label for="model-select">Model:</label>
