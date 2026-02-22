@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Query Filings — SEC EDGAR</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <nav class="nav-bar">
+            <a href="/" class="nav-brand">SEC EDGAR Tools</a>
+            <a href="/">Filing Downloader</a>
+            <a href="/query" class="active">Query Filings</a>
+        </nav>
+
+        <!-- Gemini API Key Setup (shown if not configured) -->
+        <div id="gemini-setup" class="setup-card {% if gemini_configured %}hidden{% endif %}">
+            <h2>Gemini API Key Setup</h2>
+            <p>To query filings using AI, you need a <strong>Google Gemini API key</strong>. Get one from <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a>. This is stored locally in your <code>.env</code> file.</p>
+            <label for="gemini-key-input">Gemini API Key</label>
+            <div class="input-group">
+                <input type="password" id="gemini-key-input" placeholder="Enter your Gemini API key" autocomplete="off">
+                <button id="gemini-save-btn" onclick="saveGeminiKey()">Save Key</button>
+            </div>
+            <div id="gemini-setup-error" class="error hidden"></div>
+        </div>
+
+        <!-- Filing Browser -->
+        <div id="main-content" class="{% if not gemini_configured %}hidden{% endif %}">
+            <h3>Downloaded Filings</h3>
+            <div id="filing-browser" class="filing-browser">
+                <div class="empty-state">Loading filings...</div>
+            </div>
+
+            <!-- Index Controls -->
+            <div class="index-controls">
+                <label for="ticker-select"><strong>Ticker:</strong></label>
+                <select id="ticker-select" onchange="onTickerChange()">
+                    <option value="">Select a ticker</option>
+                </select>
+                <button id="index-btn" onclick="indexSelected()" disabled>Index Selected</button>
+                <button class="btn-small" onclick="selectAllFilings()">Select All</button>
+                <button class="btn-small" onclick="deselectAllFilings()">Deselect All</button>
+            </div>
+
+            <!-- Index Progress -->
+            <div id="index-progress" class="index-progress hidden">
+                <div class="progress-bar-outer">
+                    <div id="index-progress-bar" class="progress-bar-inner" style="width: 0%"></div>
+                </div>
+                <div class="progress-msg" id="index-progress-msg">Indexing...</div>
+            </div>
+
+            <!-- Model Selector -->
+            <div class="model-selector">
+                <label for="model-select">Model:</label>
+                <select id="model-select">
+                    <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Best quality)</option>
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash (Faster / cheaper)</option>
+                </select>
+            </div>
+
+            <!-- Chat Section -->
+            <div class="chat-section">
+                <div class="chat-header">Chat with Filings</div>
+                <div class="chat-messages" id="chat-messages">
+                    <div class="empty-state">Select a ticker and ask a question about the indexed filings.</div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" id="chat-input" placeholder="Ask a question about the filings..." onkeydown="if(event.key==='Enter')sendQuery()">
+                    <button id="send-btn" onclick="sendQuery()" disabled>Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Logo.dev token passed from server
+        const LOGO_DEV_TOKEN = {{ logo_dev_token | tojson }};
+    </script>
+    <script src="/static/query.js"></script>
+</body>
+</html>

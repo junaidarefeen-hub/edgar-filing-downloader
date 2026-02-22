@@ -1,4 +1,4 @@
-"""Unit tests for edgar_client and Flask routes. All HTTP calls are mocked."""
+"""Unit tests for edgar_client, Flask routes, and RAG engine. All HTTP calls are mocked."""
 
 import json
 import os
@@ -10,6 +10,7 @@ import pytest
 
 import config
 import edgar_client
+import rag_engine
 from app import app, jobs, _download_worker
 
 
@@ -461,6 +462,314 @@ class TestSetupRoute:
     def test_save_empty_user_agent(self, client):
         resp = client.post("/api/setup", json={"userAgent": ""})
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Gemini setup route tests
+# ---------------------------------------------------------------------------
+
+class TestGeminiSetupRoute:
+    def test_save_gemini_key(self, client, tmp_path):
+        original_env = config._ENV_FILE
+        original_key = config.GEMINI_API_KEY
+        config._ENV_FILE = str(tmp_path / ".env")
+        resp = client.post("/api/gemini-setup", json={"apiKey": "test-key-123"})
+        assert resp.status_code == 200
+        assert config.GEMINI_API_KEY == "test-key-123"
+        config._ENV_FILE = original_env
+        config.GEMINI_API_KEY = original_key
+
+    def test_save_empty_key(self, client):
+        resp = client.post("/api/gemini-setup", json={"apiKey": ""})
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Query page route tests
+# ---------------------------------------------------------------------------
+
+class TestQueryPageRoute:
+    def test_returns_html(self, client):
+        resp = client.get("/query")
+        assert resp.status_code == 200
+        assert b"Query Filings" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# /api/filings route tests
+# ---------------------------------------------------------------------------
+
+class TestFilingsRoute:
+    def test_empty_filings_dir(self, client, tmp_filings_dir):
+        resp = client.get("/api/filings")
+        assert resp.status_code == 200
+        assert resp.get_json() == {}
+
+    def test_lists_filings(self, client, tmp_filings_dir):
+        # Create a fake filing structure
+        filing_dir = os.path.join(tmp_filings_dir, "AAPL", "10-K", "2024-01-01_0000320193-24-000001")
+        os.makedirs(filing_dir)
+        filepath = os.path.join(filing_dir, "aapl-20240101.htm")
+        with open(filepath, "w") as f:
+            f.write("<html>test</html>")
+
+        resp = client.get("/api/filings")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "AAPL" in data
+        assert "10-K" in data["AAPL"]
+        assert len(data["AAPL"]["10-K"]) == 1
+        assert data["AAPL"]["10-K"][0]["date"] == "2024-01-01"
+        assert data["AAPL"]["10-K"][0]["indexed"] is False
+
+    def test_multiple_tickers(self, client, tmp_filings_dir):
+        for ticker in ["AAPL", "MSFT"]:
+            filing_dir = os.path.join(tmp_filings_dir, ticker, "10-Q", "2024-03-01_acc-001")
+            os.makedirs(filing_dir)
+            with open(os.path.join(filing_dir, "doc.htm"), "w") as f:
+                f.write("content")
+
+        resp = client.get("/api/filings")
+        data = resp.get_json()
+        assert "AAPL" in data
+        assert "MSFT" in data
+
+
+# ---------------------------------------------------------------------------
+# /api/index route tests
+# ---------------------------------------------------------------------------
+
+class TestIndexRoute:
+    def test_missing_params(self, client):
+        resp = client.post("/api/index", json={})
+        assert resp.status_code == 400
+
+    def test_no_gemini_key(self, client, tmp_filings_dir):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = ""
+
+        filing_dir = os.path.join(tmp_filings_dir, "AAPL", "10-K", "2024-01-01_acc")
+        os.makedirs(filing_dir)
+        filepath = os.path.join(filing_dir, "doc.htm")
+        with open(filepath, "w") as f:
+            f.write("test")
+
+        resp = client.post("/api/index", json={"ticker": "AAPL", "filings": [filepath]})
+        assert resp.status_code == 400
+        config.GEMINI_API_KEY = original_key
+
+    @patch("rag_engine.index_filings")
+    def test_index_streams_sse(self, mock_index, client, tmp_filings_dir):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = "test-key"
+
+        filing_dir = os.path.join(tmp_filings_dir, "AAPL", "10-K", "2024-01-01_acc")
+        os.makedirs(filing_dir)
+        filepath = os.path.join(filing_dir, "doc.htm")
+        with open(filepath, "w") as f:
+            f.write("test content")
+
+        mock_index.return_value = {"indexed": 1, "skipped": 0, "total_chunks": 5}
+
+        resp = client.post("/api/index", json={"ticker": "AAPL", "filings": [filepath]})
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.content_type
+
+        data = b""
+        for chunk in resp.response:
+            data += chunk
+        decoded = data.decode()
+        assert "done" in decoded
+        config.GEMINI_API_KEY = original_key
+
+
+# ---------------------------------------------------------------------------
+# /api/query route tests
+# ---------------------------------------------------------------------------
+
+class TestQueryRoute:
+    def test_missing_params(self, client):
+        resp = client.post("/api/query", json={})
+        assert resp.status_code == 400
+
+    def test_no_gemini_key(self, client):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = ""
+        resp = client.post("/api/query", json={"ticker": "AAPL", "question": "What is revenue?"})
+        assert resp.status_code == 400
+        config.GEMINI_API_KEY = original_key
+
+    @patch("rag_engine.query")
+    def test_streams_response(self, mock_query, client):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = "test-key"
+
+        mock_query.return_value = iter(["Revenue was ", "$100 billion."])
+
+        resp = client.post("/api/query", json={"ticker": "AAPL", "question": "What is revenue?"})
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.content_type
+
+        data = b""
+        for chunk in resp.response:
+            data += chunk
+        decoded = data.decode()
+        assert "streaming" in decoded
+        assert "done" in decoded
+        config.GEMINI_API_KEY = original_key
+
+
+# ---------------------------------------------------------------------------
+# RAG engine unit tests
+# ---------------------------------------------------------------------------
+
+class TestStripHtml:
+    def test_basic_html(self):
+        result = rag_engine.strip_html("<p>Hello <b>world</b></p>")
+        assert result == "Hello world"
+
+    def test_nested_tags(self):
+        result = rag_engine.strip_html("<div><p>Paragraph 1</p><p>Paragraph 2</p></div>")
+        assert "Paragraph 1" in result
+        assert "Paragraph 2" in result
+
+    def test_empty_input(self):
+        assert rag_engine.strip_html("") == ""
+
+    def test_plain_text(self):
+        assert rag_engine.strip_html("No HTML here") == "No HTML here"
+
+    def test_whitespace_collapse(self):
+        result = rag_engine.strip_html("<p>Hello   \n\n   world</p>")
+        assert result == "Hello world"
+
+
+class TestChunkText:
+    def test_basic_chunking(self):
+        text = " ".join(f"word{i}" for i in range(2500))
+        chunks = rag_engine.chunk_text(text, chunk_size=1000, overlap=200)
+        assert len(chunks) == 3
+        # First chunk should have 1000 words
+        assert len(chunks[0].split()) == 1000
+
+    def test_small_text(self):
+        chunks = rag_engine.chunk_text("short text", chunk_size=1000, overlap=200)
+        assert len(chunks) == 1
+        assert chunks[0] == "short text"
+
+    def test_empty_text(self):
+        assert rag_engine.chunk_text("") == []
+        assert rag_engine.chunk_text("   ") == []
+
+    def test_overlap(self):
+        text = " ".join(f"word{i}" for i in range(1500))
+        chunks = rag_engine.chunk_text(text, chunk_size=1000, overlap=200)
+        assert len(chunks) == 2
+        # The second chunk should start 800 words in (1000 - 200 overlap)
+        words_chunk2 = chunks[1].split()
+        assert words_chunk2[0] == "word800"
+
+
+class TestIndexFilings:
+    @patch("rag_engine.genai")
+    @patch("rag_engine._get_chroma_client")
+    def test_indexes_files(self, mock_chroma, mock_genai, tmp_path):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = "test-key"
+
+        # Create a fake filing file
+        filing_dir = tmp_path / "filings" / "AAPL" / "10-K" / "2024-01-01_acc"
+        filing_dir.mkdir(parents=True)
+        filepath = str(filing_dir / "doc.htm")
+        with open(filepath, "w") as f:
+            f.write("<html><body>Revenue was $100 billion in fiscal year 2024.</body></html>")
+
+        # Mock ChromaDB collection
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {"ids": []}
+        mock_client = MagicMock()
+        mock_client.get_or_create_collection.return_value = mock_collection
+        mock_chroma.return_value = mock_client
+
+        # Mock Gemini embedding
+        mock_genai.embed_content.return_value = {"embedding": [[0.1] * 768]}
+
+        stats = rag_engine.index_filings([filepath], "AAPL")
+        assert stats["indexed"] == 1
+        assert stats["skipped"] == 0
+        assert stats["total_chunks"] >= 1
+        mock_collection.upsert.assert_called()
+        config.GEMINI_API_KEY = original_key
+
+    @patch("rag_engine.genai")
+    @patch("rag_engine._get_chroma_client")
+    def test_skips_already_indexed(self, mock_chroma, mock_genai, tmp_path):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = "test-key"
+
+        filepath = str(tmp_path / "doc.htm")
+        with open(filepath, "w") as f:
+            f.write("content")
+
+        mock_collection = MagicMock()
+        mock_collection.get.return_value = {"ids": ["existing_id"]}
+        mock_client = MagicMock()
+        mock_client.get_or_create_collection.return_value = mock_collection
+        mock_chroma.return_value = mock_client
+
+        stats = rag_engine.index_filings([filepath], "AAPL")
+        assert stats["skipped"] == 1
+        assert stats["indexed"] == 0
+        mock_collection.upsert.assert_not_called()
+        config.GEMINI_API_KEY = original_key
+
+
+class TestQuery:
+    @patch("rag_engine.genai")
+    @patch("rag_engine._get_chroma_client")
+    def test_query_returns_response(self, mock_chroma, mock_genai):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = "test-key"
+
+        # Mock ChromaDB
+        mock_collection = MagicMock()
+        mock_collection.query.return_value = {
+            "documents": [["Revenue was $100 billion."]],
+            "metadatas": [[{"filing_type": "10-K", "filing_date": "2024-01-01", "source_file": "/test.htm"}]],
+        }
+        mock_client = MagicMock()
+        mock_client.get_collection.return_value = mock_collection
+        mock_chroma.return_value = mock_client
+
+        # Mock Gemini embedding
+        mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
+
+        # Mock Gemini model
+        mock_chunk = MagicMock()
+        mock_chunk.text = "Based on the 10-K filing, revenue was $100 billion."
+        mock_response = MagicMock()
+        mock_response.__iter__ = MagicMock(return_value=iter([mock_chunk]))
+        mock_model = MagicMock()
+        mock_model.generate_content.return_value = mock_response
+        mock_genai.GenerativeModel.return_value = mock_model
+
+        result = list(rag_engine.query("What is revenue?", "AAPL"))
+        assert len(result) > 0
+        assert "100 billion" in result[0]
+        config.GEMINI_API_KEY = original_key
+
+    @patch("rag_engine._get_chroma_client")
+    def test_query_no_collection(self, mock_chroma):
+        original_key = config.GEMINI_API_KEY
+        config.GEMINI_API_KEY = "test-key"
+
+        mock_client = MagicMock()
+        mock_client.get_collection.side_effect = Exception("Collection not found")
+        mock_chroma.return_value = mock_client
+
+        result = list(rag_engine.query("What is revenue?", "AAPL"))
+        assert "No indexed filings" in result[0]
+        config.GEMINI_API_KEY = original_key
 
 
 class TestDirectorySanitization:

@@ -8,9 +8,11 @@
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>SEC EDGAR Filing Downloader</h1>
-        </header>
+        <nav class="nav-bar">
+            <a href="/" class="nav-brand">SEC EDGAR Tools</a>
+            <a href="/" class="active">Filing Downloader</a>
+            <a href="/query">Query Filings</a>
+        </nav>
 
         <!-- Ticker Input -->
         <div class="search-section">
@@ -25,6 +27,8 @@
         <!-- Company Info (hidden until lookup) -->
         <div id="company-section" class="hidden">
             <div class="company-info">
+                <img id="company-logo" class="company-logo hidden" alt="" />
+                <div id="company-logo-fallback" class="company-logo-fallback hidden"></div>
                 <h2 id="company-name"></h2>
                 <span id="company-cik" class="cik-badge"></span>
             </div>
@@ -99,6 +103,10 @@
         <div id="spinner" class="spinner hidden"></div>
     </div>
 
+    <script>
+        // Logo.dev token passed from server
+        const LOGO_DEV_TOKEN = {{ logo_dev_token | tojson }};
+    </script>
     <script src="/static/app.js"></script>
 </body>
 </html>

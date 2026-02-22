@@ -29,6 +29,47 @@ const show = (id) => $(id).classList.remove("hidden");
 const hide = (id) => $(id).classList.add("hidden");
 
 // ---------------------------------------------------------------------------
+// Logo helpers
+// ---------------------------------------------------------------------------
+
+const LOGO_COLORS = [
+    "#2563eb", "#7c3aed", "#db2777", "#ea580c",
+    "#16a34a", "#0891b2", "#4f46e5", "#c026d3",
+];
+
+function getLogoColor(ticker) {
+    let hash = 0;
+    for (let i = 0; i < ticker.length; i++) {
+        hash = ticker.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return LOGO_COLORS[Math.abs(hash) % LOGO_COLORS.length];
+}
+
+function showLogoFallback(ticker, imgEl, fallbackEl) {
+    imgEl.classList.add("hidden");
+    fallbackEl.textContent = ticker.charAt(0);
+    fallbackEl.style.backgroundColor = getLogoColor(ticker);
+    fallbackEl.classList.remove("hidden");
+}
+
+// ---------------------------------------------------------------------------
+// Filing type badge helper
+// ---------------------------------------------------------------------------
+
+function filingTypeBadgeClass(formType) {
+    const clean = formType.replace(/[\s\/]/g, "-");
+    const knownTypes = [
+        "10-K", "10-Q", "8-K", "DEF-14A", "DEFA14A",
+        "20-F", "S-1", "S-3", "S-4", "SC-13D", "SC-13G", "6-K",
+    ];
+    // Check common prefixes for amended forms like 10-K-A
+    for (const t of knownTypes) {
+        if (clean.startsWith(t)) return "type-" + t;
+    }
+    return "type-default";
+}
+
+// ---------------------------------------------------------------------------
 // Ticker lookup
 // ---------------------------------------------------------------------------
 
@@ -88,12 +129,25 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Render company info
+// Render company info (with logo)
 // ---------------------------------------------------------------------------
 
 function renderCompanyInfo() {
     $("company-name").textContent = state.company;
     $("company-cik").textContent = `CIK: ${state.cik}`;
+
+    const logoImg = $("company-logo");
+    const logoFallback = $("company-logo-fallback");
+
+    if (typeof LOGO_DEV_TOKEN !== "undefined" && LOGO_DEV_TOKEN) {
+        logoImg.src = `https://img.logo.dev/ticker/${state.ticker}?token=${LOGO_DEV_TOKEN}&size=64&format=png`;
+        logoImg.alt = state.ticker;
+        logoImg.classList.remove("hidden");
+        logoFallback.classList.add("hidden");
+        logoImg.onerror = () => showLogoFallback(state.ticker, logoImg, logoFallback);
+    } else {
+        showLogoFallback(state.ticker, logoImg, logoFallback);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +247,9 @@ function filterAndRenderTable() {
 
     filtered.forEach((f) => {
         const tr = document.createElement("tr");
+        const badgeClass = filingTypeBadgeClass(f.form);
         tr.innerHTML = `
-            <td>${escapeHtml(f.form)}</td>
+            <td><span class="filing-type-badge ${badgeClass}">${escapeHtml(f.form)}</span></td>
             <td>${escapeHtml(f.filingDate)}</td>
             <td>${escapeHtml(f.primaryDocDescription || f.primaryDocument)}</td>
         `;
